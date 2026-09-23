@@ -14,7 +14,10 @@ import (
 // EnsureCollection is the declaration the server requires before a first
 // write: it is idempotent, and once written, the collection exists. The
 // storage stays schemaless — the marker is the declaration, not a shape.
-func (e *Engine) EnsureCollection(_ context.Context, coll string) error {
+func (e *Engine) EnsureCollection(ctx context.Context, coll string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	key, err := ensureMarkerKey(coll)
 	if err != nil {
 		return err
@@ -29,7 +32,10 @@ func (e *Engine) EnsureCollection(_ context.Context, coll string) error {
 // caller's "insert or detect prior presence" idiom — and nothing is written.
 // A collection that was never declared fails the batch the way the server
 // does, so a typo'd identity cannot silently become a new empty collection.
-func (e *Engine) Insert(_ context.Context, coll string, documents []map[string]any) ([]string, error) {
+func (e *Engine) Insert(ctx context.Context, coll string, documents []map[string]any) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if len(documents) == 0 {
 		return nil, nil
 	}
@@ -39,6 +45,9 @@ func (e *Engine) Insert(_ context.Context, coll string, documents []map[string]a
 	}
 	items := make([]resolved, 0, len(documents))
 	for _, doc := range documents {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if doc == nil {
 			return nil, errors.New("cumulite: nil document")
 		}
@@ -66,7 +75,7 @@ func (e *Engine) Insert(_ context.Context, coll string, documents []map[string]a
 				return err
 			}
 			if _, err := txn.Get(key); err == nil {
-				return fmt.Errorf("cumulite: duplicate document %s/%s", coll, it.id)
+				return fmt.Errorf("%w: %s/%s", ErrDuplicate, coll, it.id)
 			} else if !errors.Is(err, badger.ErrKeyNotFound) {
 				return fmt.Errorf("cumulite: probe %s/%s: %w", coll, it.id, err)
 			}
@@ -90,7 +99,10 @@ func (e *Engine) Insert(_ context.Context, coll string, documents []map[string]a
 }
 
 // GetDocument returns one document or a not-found error.
-func (e *Engine) GetDocument(_ context.Context, coll, id string) (map[string]any, error) {
+func (e *Engine) GetDocument(ctx context.Context, coll, id string) (map[string]any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var out map[string]any
 	err := e.db.View(func(txn *badger.Txn) error {
 		doc, err := e.getStored(txn, coll, id)
@@ -106,7 +118,10 @@ func (e *Engine) GetDocument(_ context.Context, coll, id string) (map[string]any
 // ReplaceDocument stores the full new state of an existing document; a missing
 // document is a not-found error, which is how the graph store tells insert
 // from update.
-func (e *Engine) ReplaceDocument(_ context.Context, coll, id string, document map[string]any) (map[string]any, error) {
+func (e *Engine) ReplaceDocument(ctx context.Context, coll, id string, document map[string]any) (map[string]any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if document == nil {
 		return nil, errors.New("cumulite: nil document")
 	}
@@ -138,7 +153,10 @@ func (e *Engine) ReplaceDocument(_ context.Context, coll, id string, document ma
 // PatchDocument applies the $set operator and returns the stored document.
 // The operators beyond $set are refused rather than ignored — a silently
 // dropped $unset would leave stale fields behind.
-func (e *Engine) PatchDocument(_ context.Context, coll, id string, update map[string]any) (map[string]any, error) {
+func (e *Engine) PatchDocument(ctx context.Context, coll, id string, update map[string]any) (map[string]any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if update == nil {
 		return nil, errors.New("cumulite: nil update")
 	}
@@ -169,7 +187,10 @@ func (e *Engine) PatchDocument(_ context.Context, coll, id string, update map[st
 
 // DeleteDocument removes a document, its vectors and (when recording) its
 // change record, reporting whether it existed.
-func (e *Engine) DeleteDocument(_ context.Context, coll, id string) (bool, error) {
+func (e *Engine) DeleteDocument(ctx context.Context, coll, id string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	existed := false
 	err := e.runUpdate(func(txn *badger.Txn) error {
 		key, err := docKey(coll, id)

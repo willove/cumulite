@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/willove/cumudb/pkg/client"
+	"github.com/willove/cumulite/contract"
 )
 
 func openEngine(t *testing.T) *Engine {
@@ -148,7 +148,7 @@ func TestQueryFiltersAndPaging(t *testing.T) {
 	}
 	mustInsert(t, e, "c", docs...)
 
-	page1, err := e.Query(ctx, "c", client.Query{Limit: 10})
+	page1, err := e.Query(ctx, "c", contract.Query{Limit: 10})
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -158,14 +158,14 @@ func TestQueryFiltersAndPaging(t *testing.T) {
 	if page1.Documents[0]["_id"] != "d00" {
 		t.Fatalf("first = %v (key order)", page1.Documents[0]["_id"])
 	}
-	page2, err := e.Query(ctx, "c", client.Query{Skip: 10, Limit: 10})
+	page2, err := e.Query(ctx, "c", contract.Query{Skip: 10, Limit: 10})
 	if err != nil {
 		t.Fatalf("query skip: %v", err)
 	}
 	if page2.Documents[0]["_id"] != "d10" {
 		t.Fatalf("page2 first = %v", page2.Documents[0]["_id"])
 	}
-	all, err := e.Query(ctx, "c", client.Query{})
+	all, err := e.Query(ctx, "c", contract.Query{})
 	if err != nil {
 		t.Fatalf("query all: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestQueryFiltersAndPaging(t *testing.T) {
 		t.Fatalf("all = %d docs, last = %v", len(all.Documents), all.Documents[24]["_id"])
 	}
 
-	live, err := e.Query(ctx, "c", client.Query{Filter: map[string]any{"status": "live"}})
+	live, err := e.Query(ctx, "c", contract.Query{Filter: map[string]any{"status": "live"}})
 	if err != nil {
 		t.Fatalf("query live: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestQueryFiltersAndPaging(t *testing.T) {
 		t.Fatalf("live = %d", live.Matched)
 	}
 
-	in, err := e.Query(ctx, "c", client.Query{Filter: map[string]any{"_id": map[string]any{"$in": []any{"d01", "d07", "nope"}}}})
+	in, err := e.Query(ctx, "c", contract.Query{Filter: map[string]any{"_id": map[string]any{"$in": []any{"d01", "d07", "nope"}}}})
 	if err != nil {
 		t.Fatalf("query in: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestQueryFiltersAndPaging(t *testing.T) {
 		t.Fatalf("in = %d docs", len(in.Documents))
 	}
 
-	gte, err := e.Query(ctx, "c", client.Query{Filter: map[string]any{"score": map[string]any{"$gte": 20.0}}})
+	gte, err := e.Query(ctx, "c", contract.Query{Filter: map[string]any{"score": map[string]any{"$gte": 20.0}}})
 	if err != nil {
 		t.Fatalf("query gte: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestQueryFiltersAndPaging(t *testing.T) {
 		t.Fatalf("gte = %d", len(gte.Documents))
 	}
 
-	both, err := e.Query(ctx, "c", client.Query{Filter: map[string]any{
+	both, err := e.Query(ctx, "c", contract.Query{Filter: map[string]any{
 		"status": "live", "score": map[string]any{"$gte": 22.0},
 	}})
 	if err != nil {
@@ -208,7 +208,7 @@ func TestQueryFiltersAndPaging(t *testing.T) {
 	}
 
 	// array field: an element match is a field match
-	tags, err := e.Query(ctx, "c", client.Query{Filter: map[string]any{"tags": "even"}, Limit: 1000})
+	tags, err := e.Query(ctx, "c", contract.Query{Filter: map[string]any{"tags": "even"}, Limit: 1000})
 	if err != nil {
 		t.Fatalf("query tags: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestQueryFiltersAndPaging(t *testing.T) {
 		t.Fatalf("tags = %d", tags.Matched)
 	}
 
-	or, err := e.Query(ctx, "c", client.Query{Filter: map[string]any{
+	or, err := e.Query(ctx, "c", contract.Query{Filter: map[string]any{
 		"$or": []any{
 			map[string]any{"_id": "d03"},
 			map[string]any{"status": "retired"},
@@ -230,7 +230,7 @@ func TestQueryFiltersAndPaging(t *testing.T) {
 	}
 
 	// Skip beyond the end: an empty page, not an error
-	empty, err := e.Query(ctx, "c", client.Query{Skip: 1000, Limit: 10})
+	empty, err := e.Query(ctx, "c", contract.Query{Skip: 1000, Limit: 10})
 	if err != nil {
 		t.Fatalf("query skip past end: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestQueryFiltersAndPaging(t *testing.T) {
 
 	// Go-literal slice spellings: $or built as []map[string]any and $in with
 	// []string must read the same as their JSON-decoded []any forms.
-	goOr, err := e.Query(ctx, "c", client.Query{Filter: map[string]any{
+	goOr, err := e.Query(ctx, "c", contract.Query{Filter: map[string]any{
 		"$or": []map[string]any{
 			{"_id": "d03"},
 			{"status": "retired"},
@@ -252,7 +252,7 @@ func TestQueryFiltersAndPaging(t *testing.T) {
 	if goOr.Matched != or.Matched {
 		t.Fatalf("[]map[string]any $or matched %d, []any $or matched %d", goOr.Matched, or.Matched)
 	}
-	goIn, err := e.Query(ctx, "c", client.Query{Filter: map[string]any{
+	goIn, err := e.Query(ctx, "c", contract.Query{Filter: map[string]any{
 		"_id": map[string]any{"$in": []string{"d01", "d07", "nope"}},
 	}})
 	if err != nil {
@@ -333,28 +333,28 @@ func TestVectorIndexAndKNN(t *testing.T) {
 
 	mustEnsure(t, e, "c")
 
-	if err := e.CreateIndexRequest(ctx, "c", client.IndexRequest{
+	if err := e.CreateIndexRequest(ctx, "c", contract.IndexRequest{
 		Name: "ask_body_embed", Field: "body_embed", Type: "vector",
 		Dims: 4, Metric: "cosine", Model: "minilm",
 	}); err != nil {
 		t.Fatalf("index: %v", err)
 	}
 	// idempotent re-declare
-	if err := e.CreateIndexRequest(ctx, "c", client.IndexRequest{
+	if err := e.CreateIndexRequest(ctx, "c", contract.IndexRequest{
 		Name: "ask_body_embed", Field: "body_embed", Type: "vector",
 		Dims: 4, Metric: "cosine", Model: "minilm",
 	}); err != nil {
 		t.Fatalf("re-declare: %v", err)
 	}
 	// conflicting re-declare
-	if err := e.CreateIndexRequest(ctx, "c", client.IndexRequest{
+	if err := e.CreateIndexRequest(ctx, "c", contract.IndexRequest{
 		Name: "ask_body_embed", Field: "body_embed", Type: "vector",
 		Dims: 8, Metric: "cosine",
 	}); err == nil {
 		t.Fatal("conflicting re-declare must fail")
 	}
 	// non-vector family refused, not silently ignored
-	if err := e.CreateIndexRequest(ctx, "c", client.IndexRequest{
+	if err := e.CreateIndexRequest(ctx, "c", contract.IndexRequest{
 		Name: "pers", Field: "status", Type: "persistent",
 	}); err == nil {
 		t.Fatal("persistent index must be refused")
@@ -372,7 +372,7 @@ func TestVectorIndexAndKNN(t *testing.T) {
 		map[string]any{"_id": "zero", "body_embed": []float64{0, 0, 0, 0}},
 	)
 
-	res, err := e.KNN(ctx, "c", client.KNNRequest{
+	res, err := e.KNN(ctx, "c", contract.KNNRequest{
 		Field: "body_embed", Vector: []float64{1, 0, 0, 0}, K: 3, Metric: "cosine",
 	})
 	if err != nil {
@@ -401,17 +401,17 @@ func TestVectorIndexAndKNN(t *testing.T) {
 	}
 
 	// k larger than the corpus returns what exists
-	res, err = e.KNN(ctx, "c", client.KNNRequest{Field: "body_embed", Vector: []float64{1, 0, 0, 0}, K: 100})
+	res, err = e.KNN(ctx, "c", contract.KNNRequest{Field: "body_embed", Vector: []float64{1, 0, 0, 0}, K: 100})
 	if err != nil || len(res.Documents) != 4 {
 		t.Fatalf("knn k=100: %v docs, %v", len(res.Documents), err)
 	}
 
 	// dims mismatch on the query vector
-	if _, err := e.KNN(ctx, "c", client.KNNRequest{Field: "body_embed", Vector: []float64{1, 0}, K: 2}); err == nil {
+	if _, err := e.KNN(ctx, "c", contract.KNNRequest{Field: "body_embed", Vector: []float64{1, 0}, K: 2}); err == nil {
 		t.Fatal("query dims mismatch must fail")
 	}
 	// no index on a field
-	if _, err := e.KNN(ctx, "c", client.KNNRequest{Field: "nope", Vector: []float64{1, 0, 0, 0}, K: 2}); err == nil {
+	if _, err := e.KNN(ctx, "c", contract.KNNRequest{Field: "nope", Vector: []float64{1, 0, 0, 0}, K: 2}); err == nil {
 		t.Fatal("knn without index must fail")
 	}
 
@@ -419,7 +419,7 @@ func TestVectorIndexAndKNN(t *testing.T) {
 	if _, err := e.DeleteDocument(ctx, "c", "near"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	res, err = e.KNN(ctx, "c", client.KNNRequest{Field: "body_embed", Vector: []float64{1, 0, 0, 0}, K: 3})
+	res, err = e.KNN(ctx, "c", contract.KNNRequest{Field: "body_embed", Vector: []float64{1, 0, 0, 0}, K: 3})
 	if err != nil {
 		t.Fatalf("knn after delete: %v", err)
 	}
@@ -524,8 +524,8 @@ func TestHealth(t *testing.T) {
 	}
 }
 
-// The engine must keep satisfying the port the HTTP client satisfies — that
-// identity is the whole point of the module.
+// The engine satisfies the port by construction; the not-found idiom is the
+// contract's own.
 var _ Port = (*Engine)(nil)
 
 func TestNotFoundErrorIdiom(t *testing.T) {
@@ -534,7 +534,7 @@ func TestNotFoundErrorIdiom(t *testing.T) {
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("errors.Is(ErrNotFound) = false for %v", err)
 	}
-	if !client.IsNotFound(err) {
-		t.Fatalf("client.IsNotFound = false for %v", err)
+	if !IsNotFound(err) {
+		t.Fatalf("IsNotFound = false for %v", err)
 	}
 }

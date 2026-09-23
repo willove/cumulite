@@ -8,13 +8,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/willove/cumudb/pkg/client"
 	"github.com/dgraph-io/badger/v4"
+	"github.com/willove/cumulite/contract"
 )
 
 // KVPut stores a value. A positive TTL rides on Badger's own expiry, so a
 // lapsed key reads back as absent without a sweeper.
-func (e *Engine) KVPut(_ context.Context, key string, value []byte, ttl time.Duration) error {
+func (e *Engine) KVPut(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return e.db.Update(func(txn *badger.Txn) error {
 		entry := badger.NewEntry(kvKey(key), value)
 		if ttl > 0 {
@@ -28,7 +31,10 @@ func (e *Engine) KVPut(_ context.Context, key string, value []byte, ttl time.Dur
 }
 
 // KVGet returns a value or a not-found error.
-func (e *Engine) KVGet(_ context.Context, key string) ([]byte, error) {
+func (e *Engine) KVGet(ctx context.Context, key string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var out []byte
 	err := e.db.View(func(txn *badger.Txn) error {
 		item, err := txn.Get(kvKey(key))
@@ -48,7 +54,10 @@ func (e *Engine) KVGet(_ context.Context, key string) ([]byte, error) {
 }
 
 // KVDelete removes a key, reporting whether it existed.
-func (e *Engine) KVDelete(_ context.Context, key string) (bool, error) {
+func (e *Engine) KVDelete(ctx context.Context, key string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	existed := false
 	err := e.db.Update(func(txn *badger.Txn) error {
 		if _, err := txn.Get(kvKey(key)); err != nil {
@@ -64,7 +73,10 @@ func (e *Engine) KVDelete(_ context.Context, key string) (bool, error) {
 }
 
 // KVKeys lists the keys under a prefix in key order, capped at limit.
-func (e *Engine) KVKeys(_ context.Context, prefix string, limit int) ([]string, error) {
+func (e *Engine) KVKeys(ctx context.Context, prefix string, limit int) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	out := []string{}
 	err := e.db.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
@@ -72,6 +84,9 @@ func (e *Engine) KVKeys(_ context.Context, prefix string, limit int) ([]string, 
 		it := txn.NewIterator(opts)
 		defer it.Close()
 		for it.Rewind(); it.Valid(); it.Next() {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			key := string(it.Item().Key()[kvPrefixLen:])
 			if !strings.HasPrefix(key, prefix) {
 				continue
@@ -88,7 +103,10 @@ func (e *Engine) KVKeys(_ context.Context, prefix string, limit int) ([]string, 
 
 // SetChangelog turns a collection's write recording on or off. Disabling stops
 // new records; the records already written stay readable.
-func (e *Engine) SetChangelog(_ context.Context, coll string, enabled bool) error {
+func (e *Engine) SetChangelog(ctx context.Context, coll string, enabled bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	key, err := changelogEnabledKey(coll)
 	if err != nil {
 		return err
@@ -106,7 +124,10 @@ func (e *Engine) SetChangelog(_ context.Context, coll string, enabled bool) erro
 // returned cursor is the last sequence returned, or the cursor the read
 // started from when nothing followed it — the value a reader persists to make
 // at-least-once delivery converge.
-func (e *Engine) Changes(_ context.Context, coll string, cursor uint64, limit int) (*client.ChangesPage, error) {
+func (e *Engine) Changes(ctx context.Context, coll string, cursor uint64, limit int) (*contract.ChangesPage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if limit <= 0 {
 		limit = 100
 	}
@@ -115,7 +136,7 @@ func (e *Engine) Changes(_ context.Context, coll string, cursor uint64, limit in
 		return nil, err
 	}
 	var (
-		changes []client.ChangeRecord
+		changes []contract.ChangeRecord
 		next    = cursor
 		enabled bool
 	)
@@ -139,6 +160,9 @@ func (e *Engine) Changes(_ context.Context, coll string, cursor uint64, limit in
 			it.Rewind()
 		}
 		for ; it.Valid(); it.Next() {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			item := it.Item()
 			if !it.ValidForPrefix(prefix) {
 				break
@@ -150,7 +174,7 @@ func (e *Engine) Changes(_ context.Context, coll string, cursor uint64, limit in
 			if err != nil {
 				return fmt.Errorf("cumulite: read change %s: %w", coll, err)
 			}
-			var rec client.ChangeRecord
+			var rec contract.ChangeRecord
 			if err := json.Unmarshal(raw, &rec); err != nil {
 				return fmt.Errorf("cumulite: decode change %s: %w", coll, err)
 			}
@@ -168,7 +192,7 @@ func (e *Engine) Changes(_ context.Context, coll string, cursor uint64, limit in
 	if err != nil {
 		return nil, err
 	}
-	return &client.ChangesPage{
+	return &contract.ChangesPage{
 		Changes: changes,
 		Count:   len(changes),
 		Cursor:  next,

@@ -4,20 +4,30 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/willove/cumudb/pkg/client"
+	"github.com/willove/cumulite/contract"
 )
 
-// ErrNotFound is the client's sentinel, re-exported so engine users share one
-// idiom with server users: errors.Is(err, ErrNotFound) and client.IsNotFound
+// ErrNotFound is the contract's sentinel, re-exported so engine users share one
+// idiom with server users: errors.Is(err, ErrNotFound) and contract.IsNotFound
 // both hold for every missing document, key or collection the engine reports.
-var ErrNotFound = client.ErrNotFound
+var ErrNotFound = contract.ErrNotFound
+
+// ErrDuplicate marks a batch insert whose identity was already stored. The
+// server answers the same collision with a 409, and callers of the embedded
+// engine get a classifiable error instead of a message they must string-match.
+var ErrDuplicate = errors.New("cumulite: duplicate document")
+
+// ErrUnsupported marks a request field the lite engine refuses rather than
+// ignores: Query.Sort, Query.Projection. A silently dropped sort reorders what
+// the caller believes it asked for, which is worse than a loud failure.
+var ErrUnsupported = errors.New("cumulite: unsupported request field")
 
 func notFoundf(format string, args ...any) error {
 	return fmt.Errorf("cumulite: %s: %w", fmt.Sprintf(format, args...), ErrNotFound)
 }
 
 // IsNotFound reports whether err represents a missing resource.
-func IsNotFound(err error) bool { return client.IsNotFound(err) }
+func IsNotFound(err error) bool { return contract.IsNotFound(err) }
 
 var (
 	errNoVector   = errors.New("cumulite: no vector index on field")

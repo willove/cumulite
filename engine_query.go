@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/willove/cumudb/pkg/client"
 	"github.com/dgraph-io/badger/v4"
+	"github.com/willove/cumulite/contract"
 )
 
 // Query pages a collection in stable key order. Filters are equality AND over
@@ -16,7 +16,21 @@ import (
 // cut the page. The order is what makes paging sound — an unsorted page whose
 // order shifts between reads repeats and drops documents, so the engine always
 // walks the keyspace rather than a match order.
-func (e *Engine) Query(_ context.Context, coll string, query client.Query) (*client.QueryResult, error) {
+//
+// Sort and Projection are refused, not ignored: the lite engine has no query
+// planner to feed them, and a silently dropped sort hands back a page the
+// caller did not ask for — the same loud-failure rule the index and patch
+// operators follow.
+func (e *Engine) Query(ctx context.Context, coll string, query contract.Query) (*contract.QueryResult, error) {
+	if query.Sort != nil {
+		return nil, fmt.Errorf("%w: Sort", ErrUnsupported)
+	}
+	if query.Projection != nil {
+		return nil, fmt.Errorf("%w: Projection", ErrUnsupported)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	prefix, err := docPrefix(coll)
 	if err != nil {
 		return nil, err
@@ -34,6 +48,9 @@ func (e *Engine) Query(_ context.Context, coll string, query client.Query) (*cli
 		defer it.Close()
 		skipped := 0
 		for it.Rewind(); it.Valid(); it.Next() {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			item := it.Item()
 			if item.IsDeletedOrExpired() {
 				continue
@@ -69,7 +86,7 @@ func (e *Engine) Query(_ context.Context, coll string, query client.Query) (*cli
 	if docs == nil {
 		docs = []map[string]any{}
 	}
-	return &client.QueryResult{
+	return &contract.QueryResult{
 		Documents: docs,
 		Count:     len(docs),
 		Plan:      "cumulite-key-order-scan",

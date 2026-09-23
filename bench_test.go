@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/willove/cumudb/pkg/client"
+	"github.com/willove/cumulite/contract"
 )
 
 // benchCorpus builds n documents shaped like the suite's articles: a title, a
@@ -74,7 +74,7 @@ func BenchmarkAskScale(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			seen := 0
 			for skip := 0; ; skip += 1000 {
-				res, err := e.Query(ctx, "ask_sources", client.Query{Limit: 1000, Skip: skip})
+				res, err := e.Query(ctx, "ask_sources", contract.Query{Limit: 1000, Skip: skip})
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -91,7 +91,7 @@ func BenchmarkAskScale(b *testing.B) {
 
 	b.Run("evidence-window-filter", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			if _, err := e.Query(ctx, "ask_sources", client.Query{
+			if _, err := e.Query(ctx, "ask_sources", contract.Query{
 				Filter: map[string]any{"status": "active", "version": map[string]any{"$gte": 1.0}},
 				Limit:  200,
 			}); err != nil {
@@ -106,7 +106,7 @@ func BenchmarkAskScale(b *testing.B) {
 			ids = append(ids, docs[i*7]["_id"])
 		}
 		for i := 0; i < b.N; i++ {
-			res, err := e.Query(ctx, "ask_sources", client.Query{
+			res, err := e.Query(ctx, "ask_sources", contract.Query{
 				Filter: map[string]any{"_id": map[string]any{"$in": ids}}, Limit: 500,
 			})
 			if err != nil {
@@ -132,7 +132,7 @@ func BenchmarkKNN384(b *testing.B) {
 	if err := e.EnsureCollection(ctx, "ask_sources"); err != nil {
 		b.Fatal(err)
 	}
-	if err := e.CreateIndexRequest(ctx, "ask_sources", client.IndexRequest{
+	if err := e.CreateIndexRequest(ctx, "ask_sources", contract.IndexRequest{
 		Name: "ask_body_embed", Field: "body_embed", Type: "vector",
 		Dims: 384, Metric: "cosine", Model: "minilm",
 	}); err != nil {
@@ -157,7 +157,7 @@ func BenchmarkKNN384(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		res, err := e.KNN(ctx, "ask_sources", client.KNNRequest{
+		res, err := e.KNN(ctx, "ask_sources", contract.KNNRequest{
 			Field: "body_embed", Vector: query, K: 8, Metric: "cosine",
 		})
 		if err != nil {

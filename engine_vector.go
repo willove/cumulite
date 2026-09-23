@@ -9,8 +9,8 @@ import (
 	"math"
 	"sort"
 
-	"github.com/willove/cumudb/pkg/client"
 	"github.com/dgraph-io/badger/v4"
+	"github.com/willove/cumulite/contract"
 )
 
 // vectorIndex is a declared vector index: the field it scans, the dims it
@@ -28,7 +28,15 @@ type vectorIndex struct {
 // engine has no query planner to feed them, and pretending otherwise would
 // trade a loud failure for a silently wrong plan. Re-declaring an identical
 // index succeeds, which keeps ensure-style startup idempotent.
-func (e *Engine) CreateIndexRequest(_ context.Context, coll string, request client.IndexRequest) error {
+//
+// Declaring an index on a populated collection also builds it: the documents
+// already stored have their vectors mirrored into the new keyspace. The
+// alternative — an index that scans nothing until every document happens to be
+// rewritten — is a trap for anyone who declares after a bulk load.
+func (e *Engine) CreateIndexRequest(ctx context.Context, coll string, request contract.IndexRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if request.Type != "vector" {
 		return fmt.Errorf("cumulite: unsupported index type %q (vector only)", request.Type)
 	}
@@ -58,7 +66,8 @@ func (e *Engine) CreateIndexRequest(_ context.Context, coll string, request clie
 	if err != nil {
 		return fmt.Errorf("cumulite: encode index %s/%s: %w", coll, name, err)
 	}
-	return e.db.Update(func(txn *badger.Txn) error {
+	created := false
+	err = e.db.Update(func(txn *badger.Txn) error {
 		if item, err := txn.Get(key); err == nil {
 			existing, err := item.ValueCopy(nil)
 			if err != nil {
@@ -76,8 +85,94 @@ func (e *Engine) CreateIndexRequest(_ context.Context, coll string, request clie
 		} else if !errors.Is(err, badger.ErrKeyNotFound) {
 			return fmt.Errorf("cumulite: probe index %s/%s: %w", coll, name, err)
 		}
-		return txn.Set(key, raw)
+		if err := txn.Set(key, raw); err != nil {
+			return err
+		}
+		created = true
+		return nil
 	})
+	if err != nil {
+		return err
+	}
+	if !created {
+		return nil
+	}
+	return e.backfillVectors(ctx, coll, def)
+}
+
+// backfillVectors mirrors an index's field into the vector keyspace for every
+// document already stored, in batched transactions so one bulk load cannot
+// outgrow a single write. A dims mismatch fails the whole build rather than
+// skipping the document — a silently missing vector is a ranking bug later.
+func (e *Engine) backfillVectors(ctx context.Context, coll string, def vectorIndex) error {
+	prefix, err := docPrefix(coll)
+	if err != nil {
+		return err
+	}
+	type vecEntry struct {
+		key []byte
+		val []byte
+	}
+	var entries []vecEntry
+	err = e.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Rewind(); it.Valid(); it.Next() {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			id := string(it.Item().Key()[len(prefix):])
+			raw, err := it.Item().ValueCopy(nil)
+			if err != nil {
+				return fmt.Errorf("cumulite: read %s/%s: %w", coll, id, err)
+			}
+			var doc map[string]any
+			if err := json.Unmarshal(raw, &doc); err != nil {
+				return fmt.Errorf("cumulite: decode %s/%s: %w", coll, id, err)
+			}
+			vec, ok := vectorField(doc, def.Field)
+			if !ok {
+				continue
+			}
+			if def.Dims > 0 && len(vec) != def.Dims {
+				return fmt.Errorf("%w: document %s/%s field %s has %d, index %s declares %d",
+					errDimsMismat, coll, id, def.Field, len(vec), def.Name, def.Dims)
+			}
+			vkey, err := vecKey(coll, def.Field, id)
+			if err != nil {
+				return err
+			}
+			entries = append(entries, vecEntry{key: vkey, val: encodeVec32(vec)})
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	const batch = 500
+	for start := 0; start < len(entries); start += batch {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		end := start + batch
+		if end > len(entries) {
+			end = len(entries)
+		}
+		chunk := entries[start:end]
+		if err := e.db.Update(func(txn *badger.Txn) error {
+			for _, entry := range chunk {
+				if err := txn.Set(entry.key, entry.val); err != nil {
+					return fmt.Errorf("cumulite: backfill vector in %s: %w", coll, err)
+				}
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // listIndexesTxn reads a collection's vector index definitions.
@@ -113,7 +208,17 @@ func (e *Engine) listIndexesTxn(txn *badger.Txn, coll string) ([]vectorIndex, er
 // vector in the index is scored, which at ask's scale (tens of thousands of
 // 384-dim vectors) is milliseconds, and it keeps recall exact — no ANN
 // structure can drop a neighbour the ranking later needs.
-func (e *Engine) KNN(_ context.Context, coll string, request client.KNNRequest) (*client.KNNResult, error) {
+//
+// A request Filter narrows the answer to matching documents, applied before
+// ranking so a filtered-out document never takes a slot the caller believes an
+// active source holds. Filtering costs the bounded-candidate heap: the engine
+// can no longer stop at k scored hits, because the first k might all be
+// filtered out, so it scores the whole index and ranks — the same milliseconds
+// at this scale.
+func (e *Engine) KNN(ctx context.Context, coll string, request contract.KNNRequest) (*contract.KNNResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	metric := request.Metric
 	var def vectorIndex
 	err := e.db.View(func(txn *badger.Txn) error {
@@ -172,9 +277,42 @@ func (e *Engine) KNN(_ context.Context, coll string, request client.KNNRequest) 
 		opts.Prefix = prefix
 		it := txn.NewIterator(opts)
 		defer it.Close()
-		best := &maxHeap{}
-		heap.Init(best)
+		if request.Filter == nil {
+			best := &maxHeap{}
+			heap.Init(best)
+			for it.Rewind(); it.Valid(); it.Next() {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				item := it.Item()
+				if item.IsDeletedOrExpired() {
+					continue
+				}
+				examined++
+				raw, err := item.ValueCopy(nil)
+				if err != nil {
+					return fmt.Errorf("cumulite: read vector in %s: %w", coll, err)
+				}
+				id := string(item.Key()[len(prefix):])
+				dist, err := distance(metric, request.Vector, decodeVec32(raw))
+				if err != nil {
+					return fmt.Errorf("cumulite: score %s/%s: %w", coll, id, err)
+				}
+				heap.Push(best, knnHit{id: id, dist: dist})
+				if best.Len() > k {
+					heap.Pop(best)
+				}
+			}
+			candidates = append(candidates, best.sorted()...)
+			return nil
+		}
+		// Filtered: the candidate pool cannot be bounded at k, because the
+		// closest k may all be filtered out. Score everything and rank.
+		var hits []knnHit
 		for it.Rewind(); it.Valid(); it.Next() {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			item := it.Item()
 			if item.IsDeletedOrExpired() {
 				continue
@@ -189,12 +327,10 @@ func (e *Engine) KNN(_ context.Context, coll string, request client.KNNRequest) 
 			if err != nil {
 				return fmt.Errorf("cumulite: score %s/%s: %w", coll, id, err)
 			}
-			heap.Push(best, knnHit{id: id, dist: dist})
-			if best.Len() > k {
-				heap.Pop(best)
-			}
+			hits = append(hits, knnHit{id: id, dist: dist})
 		}
-		candidates = append(candidates, best.sorted()...)
+		sort.Slice(hits, func(i, j int) bool { return hits[i].dist < hits[j].dist })
+		candidates = hits
 		return nil
 	})
 	if err != nil {
@@ -205,6 +341,9 @@ func (e *Engine) KNN(_ context.Context, coll string, request client.KNNRequest) 
 	distances := make([]float64, 0, len(candidates))
 	err = e.db.View(func(txn *badger.Txn) error {
 		for _, hit := range candidates {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			doc, err := e.getStored(txn, coll, hit.id)
 			if err != nil {
 				if IsNotFound(err) {
@@ -212,15 +351,21 @@ func (e *Engine) KNN(_ context.Context, coll string, request client.KNNRequest) 
 				}
 				return err
 			}
+			if request.Filter != nil && !matchFilter(doc, request.Filter) {
+				continue
+			}
 			docs = append(docs, doc)
 			distances = append(distances, hit.dist)
+			if len(docs) >= k {
+				break
+			}
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &client.KNNResult{
+	return &contract.KNNResult{
 		Documents: docs,
 		Distances: distances,
 		Count:     len(docs),

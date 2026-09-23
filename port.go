@@ -4,21 +4,21 @@ import (
 	"context"
 	"time"
 
-	"github.com/willove/cumudb/pkg/client"
+	"github.com/willove/cumulite/contract"
 )
 
 // Port is the storage contract a lite CumuDB consumer runs on: the sixteen
-// *client.Client methods the ask suite calls, nothing more. Method signatures
-// are the client's, byte for byte — the client's query, KNN, index, change and
-// health types are the wire contract, and errors satisfy client.IsNotFound so
-// consumers keep one not-found idiom.
+// HTTP-client methods the ask suite calls, nothing more. Method signatures
+// carry contract's types — this repository's fork of the HTTP client's wire
+// contract — so the two engines stay separable projects and a consumer
+// converts types at the boundary instead of importing an engine.
 //
 // Anything implementing Port drops into a consumer that was written against a
-// remote server: *client.Client (HTTP) and *Engine (embedded Badger) are the
-// two in this repository.
+// remote server: the embedded Engine here, and (after converting request and
+// result types) an HTTP client elsewhere.
 type Port interface {
 	// Health reports reachability and engine identity.
-	Health(ctx context.Context) (client.Health, error)
+	Health(ctx context.Context) (contract.Health, error)
 
 	// Documents -----------------------------------------------------------------
 	// EnsureCollection declares a collection (idempotent; schemaless engines
@@ -48,7 +48,7 @@ type Port interface {
 	// (and the ordering operators), $or. Skip and Limit page in a stable
 	// key order — an unsorted page with no stable order repeats and drops
 	// documents.
-	Query(ctx context.Context, coll string, query client.Query) (*client.QueryResult, error)
+	Query(ctx context.Context, coll string, query contract.Query) (*contract.QueryResult, error)
 
 	// Key/value -----------------------------------------------------------------
 	// KVPut stores a value, honouring a positive TTL.
@@ -65,12 +65,12 @@ type Port interface {
 
 	// Vector --------------------------------------------------------------------
 	// CreateIndexRequest declares a vector index (field, dims, metric, model).
-	CreateIndexRequest(ctx context.Context, coll string, request client.IndexRequest) error
+	CreateIndexRequest(ctx context.Context, coll string, request contract.IndexRequest) error
 
 	// KNN returns the k nearest documents with their distances. The lite
 	// engine scans exactly — no ANN structures — which is the honest cost at
 	// corpus sizes up to the hundred-thousands.
-	KNN(ctx context.Context, coll string, request client.KNNRequest) (*client.KNNResult, error)
+	KNN(ctx context.Context, coll string, request contract.KNNRequest) (*contract.KNNResult, error)
 
 	// Change log ----------------------------------------------------------------
 	// SetChangelog turns recording of a collection's writes on or off.
@@ -79,10 +79,8 @@ type Port interface {
 	// Changes reads the records after a sequence cursor, oldest first. The
 	// returned cursor is the last sequence returned, or the cursor the read
 	// started from when nothing followed it.
-	Changes(ctx context.Context, coll string, cursor uint64, limit int) (*client.ChangesPage, error)
+	Changes(ctx context.Context, coll string, cursor uint64, limit int) (*contract.ChangesPage, error)
 }
 
-// The compatibility claim, checked at compile time: the CumuDB HTTP client is
-// a Port as it stands. A consumer written against it switches engines without
-// touching a call site.
-var _ Port = (*client.Client)(nil)
+// The engine is the contract.
+var _ Port = (*Engine)(nil)

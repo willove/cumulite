@@ -2,10 +2,7 @@ module github.com/willove/cumulite
 
 go 1.27.0
 
-require (
-	github.com/willove/cumudb v0.0.0
-	github.com/dgraph-io/badger/v4 v4.9.6
-)
+require github.com/dgraph-io/badger/v4 v4.9.6
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -22,5 +19,3 @@ require (
 	golang.org/x/sys v0.41.0 // indirect
 	google.golang.org/protobuf v1.36.7 // indirect
 )
-
-replace github.com/willove/cumudb => ../cumudb

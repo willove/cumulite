@@ -9,8 +9,8 @@ import (
 	"math"
 	"time"
 
-	"github.com/willove/cumudb/pkg/client"
 	"github.com/dgraph-io/badger/v4"
+	"github.com/willove/cumulite/contract"
 )
 
 // Engine is an embedded CumuDB-lite: one Badger store on disk (or in memory)
@@ -260,8 +260,11 @@ func (e *Engine) runUpdate(fn func(*badger.Txn) error) error {
 
 // Health reports engine identity and uptime. It touches no storage — a store
 // that answers this is answering storage.
-func (e *Engine) Health(_ context.Context) (client.Health, error) {
-	return client.Health{
+func (e *Engine) Health(ctx context.Context) (contract.Health, error) {
+	if err := ctx.Err(); err != nil {
+		return contract.Health{}, err
+	}
+	return contract.Health{
 		Status:    "ok",
 		Version:   "cumulite/0.1.0",
 		Backend:   "badger",
@@ -375,7 +378,7 @@ func (e *Engine) appendChange(txn *badger.Txn, coll, id, op string) error {
 	if err := txn.Set(key, encodeU64(next)); err != nil {
 		return fmt.Errorf("cumulite: bump change sequence %s: %w", coll, err)
 	}
-	rec := client.ChangeRecord{
+	rec := contract.ChangeRecord{
 		Sequence: next,
 		Op:       op,
 		ID:       id,
