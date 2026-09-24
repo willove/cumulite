@@ -97,6 +97,51 @@ flags:
 `)
 }
 
+// parseArgs parses a command's arguments with its flags in any position. The
+// stdlib FlagSet stops at the first positional argument, so the natural form
+// this CLI documents — `doc query COLL -filter JSON` — would otherwise stop at
+// the collection and silently DROP -filter. Reordering the flag/value pairs in
+// front of the positionals makes that form and `-filter JSON COLL` both work.
+func parseArgs(fs *flag.FlagSet, args []string) error {
+	return fs.Parse(flagFirst(fs, args))
+}
+
+// flagFirst returns args as [flags..., positionals...]. A token is a flag when
+// it starts with '-'; a known non-boolean flag consumes the next token as its
+// value. An unknown flag is handed to the FlagSet so it fails loudly instead of
+// being swallowed as a positional.
+func flagFirst(fs *flag.FlagSet, args []string) []string {
+	var flags, pos []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			pos = append(pos, args[i+1:]...)
+			break
+		}
+		if len(a) < 2 || a[0] != '-' {
+			pos = append(pos, a)
+			continue
+		}
+		name := strings.TrimLeft(a, "-")
+		flags = append(flags, a)
+		if eq := strings.IndexByte(name, '='); eq >= 0 {
+			continue // -flag=value carries its own value
+		}
+		def := fs.Lookup(name)
+		if def == nil {
+			continue
+		}
+		if bf, ok := def.Value.(interface{ IsBoolFlag() bool }); ok && bf.IsBoolFlag() {
+			continue
+		}
+		if i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	return append(flags, pos...)
+}
+
 // openParsed opens the store from the two shared flags. -memory exists so a
 // smoke run can exercise the binary without touching a directory.
 func openParsed(dir string, memory bool) (*cumulite.Engine, error) {
@@ -125,7 +170,7 @@ func printJSON(v any) error {
 func cmdHealth(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("health", flag.ExitOnError)
 	dir, mem := storeFlags(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
 	e, err := openParsed(*dir, *mem)
@@ -143,7 +188,7 @@ func cmdHealth(ctx context.Context, args []string) error {
 func cmdCollections(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("collections", flag.ExitOnError)
 	dir, mem := storeFlags(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
 	e, err := openParsed(*dir, *mem)
@@ -185,7 +230,7 @@ func cmdKV(ctx context.Context, args []string) error {
 	dir, mem := storeFlags(fs)
 	ttlRaw := fs.String("ttl", "", "time-to-live as a duration")
 	limit := fs.Int("limit", 0, "max keys to list")
-	if err := fs.Parse(rest); err != nil {
+	if err := parseArgs(fs, rest); err != nil {
 		return err
 	}
 	e, err := openParsed(*dir, *mem)
@@ -259,7 +304,7 @@ func cmdDoc(ctx context.Context, args []string) error {
 	setRaw := fs.String("set", "", "fields as JSON for a $set patch")
 	skip := fs.Int("skip", 0, "records to skip")
 	limit := fs.Int("limit", 100, "page size")
-	if err := fs.Parse(rest); err != nil {
+	if err := parseArgs(fs, rest); err != nil {
 		return err
 	}
 	e, err := openParsed(*dir, *mem)
@@ -364,7 +409,7 @@ func cmdIndex(ctx context.Context, args []string) error {
 	dims := fs.Int("dims", 0, "dimension count")
 	metric := fs.String("metric", "cosine", "cosine|l2|ip")
 	model := fs.String("model", "", "embedding model label")
-	if err := fs.Parse(rest); err != nil {
+	if err := parseArgs(fs, rest); err != nil {
 		return err
 	}
 	e, err := openParsed(*dir, *mem)
@@ -420,7 +465,7 @@ func cmdKNN(ctx context.Context, args []string) error {
 	k := fs.Int("k", 8, "neighbour count")
 	metric := fs.String("metric", "", "cosine|l2|ip")
 	filterRaw := fs.String("filter", "", "filter as JSON")
-	if err := fs.Parse(args); err != nil {
+	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
 	e, err := openParsed(*dir, *mem)
@@ -458,7 +503,7 @@ func cmdChanges(ctx context.Context, args []string) error {
 	dir, mem := storeFlags(fs)
 	cursor := fs.Uint64("cursor", 0, "read records after this sequence")
 	limit := fs.Int("limit", 100, "page size")
-	if err := fs.Parse(args); err != nil {
+	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
 	e, err := openParsed(*dir, *mem)
@@ -481,7 +526,7 @@ func cmdChanges(ctx context.Context, args []string) error {
 func cmdChangelog(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("changelog", flag.ExitOnError)
 	dir, mem := storeFlags(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 2 {
@@ -510,7 +555,7 @@ func cmdChangelog(ctx context.Context, args []string) error {
 func cmdVerify(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
 	dir, mem := storeFlags(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
 	e, err := openParsed(*dir, *mem)
