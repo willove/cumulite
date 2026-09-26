@@ -2,9 +2,43 @@ package cumulite
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+// hardcodedVersionLiteral is the bug shape this file guards against: a semver
+// literal spelled next to the cumulite/ prefix in source. The formatting
+// prefix ("cumulite/" + engineVersion()) is fine; digits inside the literal
+// are how the tag moved to v0.2.0 while Health kept saying 0.1.0.
+var hardcodedVersionLiteral = regexp.MustCompile(`"cumulite/v?\d`)
+
+func TestVersionIsNeverALiteral(t *testing.T) {
+	dirs := []string{".", "../cmd/cumulite"}
+	for _, dir := range dirs {
+		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		if err != nil {
+			t.Fatalf("glob %s: %v", dir, err)
+		}
+		for _, f := range files {
+			if strings.HasSuffix(f, "_test.go") {
+				continue
+			}
+			raw, err := os.ReadFile(f)
+			if err != nil {
+				t.Fatalf("read %s: %v", f, err)
+			}
+			for i, line := range strings.Split(string(raw), "\n") {
+				if hardcodedVersionLiteral.MatchString(line) {
+					t.Fatalf("%s:%d hardcodes a version (%s) — resolve it through engineVersion() instead",
+						f, i+1, strings.TrimSpace(line))
+				}
+			}
+		}
+	}
+}
 
 func TestHealthVersionFollowsTheTag(t *testing.T) {
 	e := openEngine(t)
