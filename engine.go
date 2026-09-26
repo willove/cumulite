@@ -275,14 +275,18 @@ func (e *Engine) runUpdate(fn func(*badger.Txn) error) error {
 // ---------------------------------------------------------------------------
 
 // Health reports engine identity and uptime. It touches no storage — a store
-// that answers this is answering storage.
+// that answers this is answering storage. The version is resolved, not
+// hardcoded: the ldflags-pinned release value, else the module version the
+// consuming binary records (see version.go) — an operator's only visible
+// signal for which capabilities a running store has must not drift from the
+// tag.
 func (e *Engine) Health(ctx context.Context) (contract.Health, error) {
 	if err := ctx.Err(); err != nil {
 		return contract.Health{}, err
 	}
 	return contract.Health{
 		Status:    "ok",
-		Version:   "cumulite/0.1.0",
+		Version:   "cumulite/" + engineVersion(),
 		Backend:   "badger",
 		InMemory:  e.db.Opts().InMemory,
 		UptimeSec: int(time.Since(e.start).Seconds()),

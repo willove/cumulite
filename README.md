@@ -178,5 +178,11 @@ HTTP 客户端适配器与 `-server` 开关已删除。Badger 对目录取排他
   注意 macOS 的 `fsync` 不落盘面，真断电持久要在 Linux 上复验。
 - Badger 编译/压缩有后台 IO；长驻进程建议监控 `DB()` 上的 LSM 状态（cumudb 的 compaction
   经验同样适用）。
+- **版本自报随 tag 走**（`version.go`）：`Health.Version` 不再硬编码，解析顺序为——
+  `-ldflags "-X github.com/willove/cumulite.version=$(git describe --tags)"` 的注入值 →
+  构建信息里的模块版本（作为依赖被嵌入时读 go.mod 记录的版本；本仓在恰好打 tag 的提交上
+  构建时 Go 1.24+ 会从 VCS 戳入）→ 兜底 `dev`。教训：v0.2.0 打了 tag，Health 仍报写死的
+  `cumulite/0.1.0`——自报版本是运维判断"这个 store 有没有防漂移能力"的唯一可见信号
+  （v0.2.0 有三件套、v0.1.0 没有），它必须诚实。
 - 命名空间不在引擎内：cumulus 侧 `ns.Coll` 已把 `ns:coll` 合成进集合名，引擎把集合名当不透明
   字节串（含 `:` 合法，含 NUL 拒绝）。
