@@ -13,7 +13,7 @@ import (
 // cannot honour must fail loudly, a filter the caller passes must actually
 // filter, and a cancelled context must stop a scan.
 
-func TestQueryRefusesSortAndProjection(t *testing.T) {
+func TestQueryRefusesSortAndDottedProjection(t *testing.T) {
 	e := openEngine(t)
 	mustEnsure(t, e, "c")
 	if _, err := e.Insert(context.Background(), "c", []map[string]any{{"_id": "a", "n": 1.0}}); err != nil {
@@ -23,12 +23,23 @@ func TestQueryRefusesSortAndProjection(t *testing.T) {
 	if _, err := e.Query(context.Background(), "c", contract.Query{Sort: map[string]any{"n": -1}}); !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("Sort: err = %v, want ErrUnsupported", err)
 	}
-	if _, err := e.Query(context.Background(), "c", contract.Query{Projection: map[string]any{"n": 1}}); !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("Projection: err = %v, want ErrUnsupported", err)
+	// Top-level projection is honoured; a dotted path is the part that needs
+	// a projection planner the lite engine has none of, and is refused.
+	if _, err := e.Query(context.Background(), "c", contract.Query{Projection: map[string]any{"a.b": 1}}); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("dotted Projection: err = %v, want ErrUnsupported", err)
 	}
 	// The supported fields still work.
-	if _, err := e.Query(context.Background(), "c", contract.Query{Filter: map[string]any{"n": 1.0}, Skip: 0, Limit: 10}); err != nil {
+	page, err := e.Query(context.Background(), "c", contract.Query{
+		Filter:     map[string]any{"n": 1.0},
+		Projection: map[string]any{"n": 1, "_id": 0},
+		Skip:       0,
+		Limit:      10,
+	})
+	if err != nil {
 		t.Fatalf("filter page: %v", err)
+	}
+	if len(page.Documents) != 1 || len(page.Documents[0]) != 1 || page.Documents[0]["n"] != 1.0 {
+		t.Fatalf("projected page = %+v", page.Documents)
 	}
 }
 

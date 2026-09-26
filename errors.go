@@ -18,8 +18,9 @@ var ErrNotFound = contract.ErrNotFound
 var ErrDuplicate = errors.New("cumulite: duplicate document")
 
 // ErrUnsupported marks a request field the lite engine refuses rather than
-// ignores: Query.Sort, Query.Projection. A silently dropped sort reorders what
-// the caller believes it asked for, which is worse than a loud failure.
+// ignores: Query.Sort, dotted projection paths. A silently dropped sort
+// reorders what the caller believes it asked for, which is worse than a loud
+// failure.
 var ErrUnsupported = errors.New("cumulite: unsupported request field")
 
 func notFoundf(format string, args ...any) error {

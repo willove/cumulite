@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/willove/cumulite"
 )
 
 // The usage text documents the collection first (`doc query COLL -filter JSON`).
@@ -63,5 +67,52 @@ func TestParseArgsRejectsUnknownFlag(t *testing.T) {
 	fs.String("filter", "", "")
 	if err := parseArgs(fs, []string{"COLL", "-nope", "x"}); err == nil {
 		t.Fatal("an unknown flag after a positional must fail, not be swallowed as a positional")
+	}
+}
+
+// A subscribe against a collection whose changelog was never enabled returns
+// at once with the off notice rather than parking forever.
+func TestSubscribeReportsChangelogOff(t *testing.T) {
+	if err := run([]string{"subscribe", "-memory", "fresh"}); err != nil {
+		t.Fatalf("subscribe on a never-enabled changelog: %v", err)
+	}
+}
+
+// An enabled-but-empty changelog parks until -timeout, then exits cleanly.
+func TestSubscribeTimesOutCleanly(t *testing.T) {
+	dir := t.TempDir()
+	if err := run([]string{"doc", "ensure", "-data", dir, "c"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"changelog", "-data", dir, "c", "on"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"subscribe", "-data", dir, "-timeout", "80ms", "c"}); err != nil {
+		t.Fatalf("subscribe with an empty changelog must time out cleanly: %v", err)
+	}
+}
+
+// -projection reaches the engine: a top-level projection queries fine, a
+// dotted path comes back as the engine's loud refusal.
+func TestQueryProjectionFlag(t *testing.T) {
+	dir := t.TempDir()
+	if err := run([]string{"doc", "ensure", "-data", dir, "c"}); err != nil {
+		t.Fatal(err)
+	}
+	e, err := cumulite.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.Insert(context.Background(), "c", []map[string]any{{"_id": "a", "n": 1.0, "secret": "x"}})
+	e.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"doc", "query", "-data", dir, "-projection", `{"n": 1, "_id": 0}`, "c"}); err != nil {
+		t.Fatalf("query with -projection: %v", err)
+	}
+	err = run([]string{"doc", "query", "-data", dir, "-projection", `{"a.b": 1}`, "c"})
+	if err == nil || !strings.Contains(err.Error(), "dotted") {
+		t.Fatalf("dotted -projection err = %v, want the engine's loud refusal", err)
 	}
 }

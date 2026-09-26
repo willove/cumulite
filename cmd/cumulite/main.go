@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
@@ -53,6 +54,8 @@ func run(args []string) error {
 		return cmdKNN(ctx, rest)
 	case "changes":
 		return cmdChanges(ctx, rest)
+	case "subscribe":
+		return cmdSubscribe(ctx, rest)
 	case "changelog":
 		return cmdChangelog(ctx, rest)
 	case "verify":
@@ -80,7 +83,7 @@ commands:
   kv del KEY                          delete one key
   doc get COLL ID                      read one document
   doc ensure COLL                      declare a collection
-  doc query COLL [-filter JSON] [-skip N] [-limit N]
+  doc query COLL [-filter JSON] [-projection JSON] [-skip N] [-limit N]
   doc insert COLL FILE|-               insert a JSON array (or object) of documents
   doc patch COLL ID -set JSON          apply a $set patch
   doc del COLL ID                      delete one document
@@ -88,7 +91,9 @@ commands:
   index ls COLL                        list a collection's vector indexes
   knn COLL -field F -vector 0.1,0.2 [-k 8] [-metric cosine] [-filter JSON]
   changes COLL [-cursor N] [-limit N]  read the change log after a cursor
-  changelog COLL on|off               turn write recording on or off
+  subscribe COLL [-cursor N] [-limit N] [-timeout 30s]
+                                       watch: print each page as records land
+  changelog COLL on|off                turn write recording on or off
   verify                               walk the keyspace, decode every value
 
 flags:
@@ -301,6 +306,7 @@ func cmdDoc(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("doc "+sub, flag.ExitOnError)
 	dir, mem := storeFlags(fs)
 	filterRaw := fs.String("filter", "", "filter as JSON")
+	projRaw := fs.String("projection", "", `projection as JSON ({"field":1} keeps, {"field":0} drops)`)
 	setRaw := fs.String("set", "", "fields as JSON for a $set patch")
 	skip := fs.Int("skip", 0, "records to skip")
 	limit := fs.Int("limit", 100, "page size")
@@ -329,7 +335,7 @@ func cmdDoc(ctx context.Context, args []string) error {
 		return e.EnsureCollection(ctx, fs.Arg(0))
 	case "query":
 		if fs.NArg() < 1 {
-			return errors.New("doc query COLL [-filter JSON] [-skip N] [-limit N]")
+			return errors.New("doc query COLL [-filter JSON] [-projection JSON] [-skip N] [-limit N]")
 		}
 		var q contract.Query
 		if *filterRaw != "" {
@@ -338,6 +344,13 @@ func cmdDoc(ctx context.Context, args []string) error {
 				return fmt.Errorf("-filter: %w", err)
 			}
 			q.Filter = f
+		}
+		if *projRaw != "" {
+			p, err := decodeJSONAny(*projRaw)
+			if err != nil {
+				return fmt.Errorf("-projection: %w", err)
+			}
+			q.Projection = p
 		}
 		q.Skip, q.Limit = *skip, *limit
 		res, err := e.Query(ctx, fs.Arg(0), q)
@@ -519,6 +532,57 @@ func cmdChanges(ctx context.Context, args []string) error {
 		return err
 	}
 	return printJSON(page)
+}
+
+// cmdSubscribe watches the change log: each page prints the moment records
+// follow the cursor, the cursor advances page by page. -timeout bounds the
+// wait (0 means until interrupted); Ctrl-C exits cleanly either way.
+func cmdSubscribe(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("subscribe", flag.ExitOnError)
+	dir, mem := storeFlags(fs)
+	cursor := fs.Uint64("cursor", 0, "start after this sequence")
+	limit := fs.Int("limit", 100, "page size")
+	timeout := fs.Duration("timeout", 0, "stop waiting after this long (0 = until interrupted)")
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
+	e, err := openParsed(*dir, *mem)
+	if err != nil {
+		return err
+	}
+	defer e.Close()
+	if fs.NArg() < 1 {
+		return errors.New("subscribe COLL [-cursor N] [-limit N] [-timeout 30s]")
+	}
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
+	defer stop()
+	if *timeout > 0 {
+		ctx, stop = context.WithTimeout(ctx, *timeout)
+		defer stop()
+	}
+	coll := fs.Arg(0)
+	for {
+		page, err := e.Subscribe(ctx, coll, *cursor, *limit)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				fmt.Println("(no new records within -timeout)")
+				return nil
+			}
+			if errors.Is(err, context.Canceled) {
+				fmt.Println("(interrupted)")
+				return nil
+			}
+			return err
+		}
+		if page.Count == 0 && !page.Enabled {
+			fmt.Printf("(changelog for %s is off — turn it on: cumulite changelog %s on)\n", coll, coll)
+			return nil
+		}
+		if err := printJSON(page); err != nil {
+			return err
+		}
+		*cursor = page.Cursor
+	}
 }
 
 // cmdChangelog turns a collection's write recording on or off. Disabling

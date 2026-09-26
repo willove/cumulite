@@ -199,3 +199,34 @@ func (e *Engine) Changes(ctx context.Context, coll string, cursor uint64, limit 
 		Enabled: enabled,
 	}, nil
 }
+
+// subscribePoll is how long Subscribe parks between empty changelog reads.
+// Badger offers no watch on committed writes, so the wait is short polls; the
+// interval is a variable only so a test can tighten it, never to be tuned in
+// production code.
+var subscribePoll = 50 * time.Millisecond
+
+// Subscribe is the changelog's blocking read: it returns as soon as a record
+// follows cursor, parking in subscribePoll turns until one does. When the
+// changelog is off it returns immediately — the page's Enabled=false tells
+// the caller waiting is pointless — and records written before the changelog
+// was disabled still drain. The engine keeps no subscriber state: the caller
+// persists the returned cursor and calls again, so a restart or a switch of
+// reader resumes exactly where the last consumed page ended. Cancelling ctx
+// while parked returns ctx.Err().
+func (e *Engine) Subscribe(ctx context.Context, coll string, cursor uint64, limit int) (*contract.ChangesPage, error) {
+	for {
+		page, err := e.Changes(ctx, coll, cursor, limit)
+		if err != nil {
+			return nil, err
+		}
+		if page.Count > 0 || !page.Enabled {
+			return page, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(subscribePoll):
+		}
+	}
+}

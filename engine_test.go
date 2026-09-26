@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"testing"
 	"time"
 
@@ -510,6 +511,237 @@ func TestChangelog(t *testing.T) {
 	}
 	if len(page.Changes) != 3 || page.Enabled {
 		t.Fatalf("changes after disable = %d, enabled %v", len(page.Changes), page.Enabled)
+	}
+}
+
+func TestQueryProjection(t *testing.T) {
+	e := openEngine(t)
+	mustEnsure(t, e, "c")
+	mustInsert(t, e, "c",
+		map[string]any{"_id": "a1", "name": "one", "size": 10, "secret": "x"},
+		map[string]any{"_id": "a2", "name": "two", "size": 20, "secret": "y"},
+	)
+	ctx := context.Background()
+
+	keys := func(docs []map[string]any) []string {
+		out := []string{}
+		for _, doc := range docs {
+			for key := range doc {
+				out = append(out, key)
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+
+	// nil and an empty object pass documents through unchanged
+	for _, proj := range []any{nil, map[string]any{}} {
+		page, err := e.Query(ctx, "c", contract.Query{Projection: proj})
+		if err != nil {
+			t.Fatalf("query projection %v: %v", proj, err)
+		}
+		if got := keys(page.Documents); got[0] != "_id" || len(got) != 8 {
+			t.Fatalf("projection %v keys = %v", proj, got)
+		}
+	}
+
+	// inclusion keeps the listed fields plus _id
+	page, err := e.Query(ctx, "c", contract.Query{Projection: map[string]any{"name": 1}})
+	if err != nil {
+		t.Fatalf("inclusion: %v", err)
+	}
+	if got := keys(page.Documents); !equal(got, []string{"_id", "_id", "name", "name"}) {
+		t.Fatalf("inclusion keys = %v", got)
+	}
+
+	// _id may be suppressed in an inclusion projection
+	page, err = e.Query(ctx, "c", contract.Query{Projection: map[string]any{"name": 1, "_id": 0}})
+	if err != nil {
+		t.Fatalf("inclusion without _id: %v", err)
+	}
+	if got := keys(page.Documents); !equal(got, []string{"name", "name"}) {
+		t.Fatalf("inclusion without _id keys = %v", got)
+	}
+
+	// []string is an inclusion list
+	page, err = e.Query(ctx, "c", contract.Query{Projection: []string{"name", "size"}})
+	if err != nil {
+		t.Fatalf("field list: %v", err)
+	}
+	if got := keys(page.Documents); len(got) != 6 {
+		t.Fatalf("field list keys = %v", got)
+	}
+
+	// exclusion keeps everything but the listed fields; _id survives an
+	// exclusion projection, matching the full engine's server semantics
+	page, err = e.Query(ctx, "c", contract.Query{Projection: map[string]any{"secret": 0}})
+	if err != nil {
+		t.Fatalf("exclusion: %v", err)
+	}
+	if got := keys(page.Documents); !equal(got, []string{"_id", "_id", "name", "name", "size", "size"}) {
+		t.Fatalf("exclusion keys = %v", got)
+	}
+
+	// only "_id": 1 is an inclusion of _id alone
+	page, err = e.Query(ctx, "c", contract.Query{Projection: map[string]any{"_id": 1}})
+	if err != nil {
+		t.Fatalf("id-only: %v", err)
+	}
+	if got := keys(page.Documents); !equal(got, []string{"_id", "_id"}) {
+		t.Fatalf("id-only keys = %v", got)
+	}
+
+	// filtering runs on the unprojected document: filter by size, project name
+	page, err = e.Query(ctx, "c", contract.Query{
+		Filter:     map[string]any{"size": map[string]any{"$gte": 15}},
+		Projection: map[string]any{"name": 1, "_id": 0},
+	})
+	if err != nil {
+		t.Fatalf("filter+projection: %v", err)
+	}
+	if len(page.Documents) != 1 || page.Documents[0]["name"] != "two" {
+		t.Fatalf("filter+projection docs = %+v", page.Documents)
+	}
+
+	// projection never changes what the scan counts
+	projected, err := e.Query(ctx, "c", contract.Query{Projection: map[string]any{"name": 1}})
+	if err != nil {
+		t.Fatalf("projection-only: %v", err)
+	}
+	plain, err := e.Query(ctx, "c", contract.Query{})
+	if err != nil {
+		t.Fatalf("plain: %v", err)
+	}
+	if projected.Examined != plain.Examined || projected.Matched != plain.Matched {
+		t.Fatalf("examined/matched moved under projection: %d/%d vs %d/%d",
+			projected.Examined, projected.Matched, plain.Examined, plain.Matched)
+	}
+
+	// mixing inclusion and exclusion is refused
+	if _, err := e.Query(ctx, "c", contract.Query{Projection: map[string]any{"name": 1, "size": 0}}); err == nil {
+		t.Fatal("mixed projection accepted")
+	}
+	// a flag that is neither 0 nor 1 is refused
+	if _, err := e.Query(ctx, "c", contract.Query{Projection: map[string]any{"name": 2}}); err == nil {
+		t.Fatal("non-0/1 flag accepted")
+	}
+	// dotted paths are refused loudly, in both map and list form
+	if _, err := e.Query(ctx, "c", contract.Query{Projection: map[string]any{"a.b": 1}}); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("dotted map projection err = %v", err)
+	}
+	if _, err := e.Query(ctx, "c", contract.Query{Projection: []string{"a.b"}}); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("dotted list projection err = %v", err)
+	}
+	// an unsupported projection shape is refused
+	if _, err := e.Query(ctx, "c", contract.Query{Projection: 3}); err == nil {
+		t.Fatal("int projection accepted")
+	}
+}
+
+func equal(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestSubscribe(t *testing.T) {
+	e := openEngine(t)
+	mustEnsure(t, e, "c")
+	ctx := context.Background()
+	if err := e.SetChangelog(ctx, "c", true); err != nil {
+		t.Fatalf("enable changelog: %v", err)
+	}
+
+	// records already past the cursor return without parking
+	mustInsert(t, e, "c", map[string]any{"_id": "d1"})
+	page, err := e.Subscribe(ctx, "c", 0, 10)
+	if err != nil {
+		t.Fatalf("subscribe with backlog: %v", err)
+	}
+	if page.Count != 1 || !page.Enabled {
+		t.Fatalf("subscribe with backlog = %+v", page)
+	}
+
+	// a subscriber at the head parks until a write lands, then returns it
+	type subResult struct {
+		page *contract.ChangesPage
+		err  error
+	}
+	results := make(chan subResult, 1)
+	go func() {
+		p, err := e.Subscribe(ctx, "c", page.Cursor, 10)
+		results <- subResult{p, err}
+	}()
+	time.Sleep(2 * subscribePoll)
+	mustInsert(t, e, "c", map[string]any{"_id": "d2"})
+	select {
+	case r := <-results:
+		if r.err != nil {
+			t.Fatalf("parked subscribe: %v", r.err)
+		}
+		if r.page.Count != 1 || r.page.Changes[0].ID != "d2" {
+			t.Fatalf("parked subscribe page = %+v", r.page)
+		}
+		page = r.page
+	case <-time.After(5 * time.Second):
+		t.Fatal("subscribe did not return after a write")
+	}
+
+	// cancelling while parked returns ctx.Err()
+	parked, cancel := context.WithCancel(ctx)
+	go func() {
+		_, err := e.Subscribe(parked, "c", page.Cursor, 10)
+		results <- subResult{nil, err}
+	}()
+	time.Sleep(2 * subscribePoll)
+	cancel()
+	select {
+	case r := <-results:
+		if !errors.Is(r.err, context.Canceled) {
+			t.Fatalf("cancelled subscribe err = %v", r.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("subscribe did not return on cancel")
+	}
+
+	// a changelog that was never enabled returns at once, Enabled=false
+	fresh, err := e.Subscribe(ctx, "fresh", 0, 10)
+	if err != nil {
+		t.Fatalf("subscribe never-enabled: %v", err)
+	}
+	if fresh.Enabled || fresh.Count != 0 {
+		t.Fatalf("subscribe never-enabled = %+v", fresh)
+	}
+
+	// a disabled changelog still drains records written before it was turned
+	// off, and reports Enabled=false so the caller stops waiting
+	mustEnsure(t, e, "drained")
+	if err := e.SetChangelog(ctx, "drained", true); err != nil {
+		t.Fatalf("enable drained: %v", err)
+	}
+	mustInsert(t, e, "drained", map[string]any{"_id": "dz"})
+	if err := e.SetChangelog(ctx, "drained", false); err != nil {
+		t.Fatalf("disable drained: %v", err)
+	}
+	drained, err := e.Subscribe(ctx, "drained", 0, 10)
+	if err != nil {
+		t.Fatalf("subscribe drained: %v", err)
+	}
+	if drained.Count != 1 || drained.Enabled {
+		t.Fatalf("subscribe drained = %+v", drained)
+	}
+	again, err := e.Subscribe(ctx, "drained", drained.Cursor, 10)
+	if err != nil {
+		t.Fatalf("subscribe drained tail: %v", err)
+	}
+	if again.Count != 0 || again.Enabled {
+		t.Fatalf("subscribe drained tail = %+v", again)
 	}
 }
 

@@ -8,10 +8,12 @@ import (
 )
 
 // Port is the storage contract a lite CumuDB consumer runs on: the sixteen
-// HTTP-client methods the ask suite calls, nothing more. Method signatures
-// carry contract's types — this repository's fork of the HTTP client's wire
-// contract — so the two engines stay separable projects and a consumer
-// converts types at the boundary instead of importing an engine.
+// HTTP-client methods the ask suite calls, plus Subscribe — the changelog's
+// blocking read, for a consumer that waits for writes instead of polling.
+// Method signatures carry contract's types — this repository's fork of the
+// HTTP client's wire contract — so the two engines stay separable projects
+// and a consumer converts types at the boundary instead of importing an
+// engine.
 //
 // Anything implementing Port drops into a consumer that was written against a
 // remote server: the embedded Engine here, and (after converting request and
@@ -80,6 +82,13 @@ type Port interface {
 	// returned cursor is the last sequence returned, or the cursor the read
 	// started from when nothing followed it.
 	Changes(ctx context.Context, coll string, cursor uint64, limit int) (*contract.ChangesPage, error)
+
+	// Subscribe is the changelog's blocking read: it waits until a record
+	// follows cursor (or the changelog is off, or ctx ends) and returns one
+	// page. The engine holds no subscriber state — the caller owns the
+	// cursor, so waiting, restarting and switching readers are all the same
+	// loop.
+	Subscribe(ctx context.Context, coll string, cursor uint64, limit int) (*contract.ChangesPage, error)
 }
 
 // The engine is the contract.

@@ -17,16 +17,20 @@ import (
 // order shifts between reads repeats and drops documents, so the engine always
 // walks the keyspace rather than a match order.
 //
-// Sort and Projection are refused, not ignored: the lite engine has no query
-// planner to feed them, and a silently dropped sort hands back a page the
-// caller did not ask for — the same loud-failure rule the index and patch
-// operators follow.
+// Sort is refused, not ignored: the lite engine has no query planner to feed
+// it, and a silently dropped sort hands back a page the caller did not ask
+// for. Projection is honoured at the top level only — include or exclude
+// whole fields, _id kept unless suppressed; dotted paths are refused for the
+// same reason Sort is, because they need a projection planner the engine has
+// none of. Projecting never changes what the scan counts: Examined and
+// Matched report the unprojected documents.
 func (e *Engine) Query(ctx context.Context, coll string, query contract.Query) (*contract.QueryResult, error) {
 	if query.Sort != nil {
 		return nil, fmt.Errorf("%w: Sort", ErrUnsupported)
 	}
-	if query.Projection != nil {
-		return nil, fmt.Errorf("%w: Projection", ErrUnsupported)
+	proj, err := parseProjection(query.Projection)
+	if err != nil {
+		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -73,7 +77,7 @@ func (e *Engine) Query(ctx context.Context, coll string, query contract.Query) (
 				continue
 			}
 			if limit <= 0 || len(docs) < limit {
-				docs = append(docs, doc)
+				docs = append(docs, proj.apply(doc))
 				continue
 			}
 			return nil // page complete

@@ -1,0 +1,7 @@
+# The security scanner's own state (it writes inside the project it scans).
+.mimosa/
+
+# Build and test products.
+bin/
+*.test
+*.out

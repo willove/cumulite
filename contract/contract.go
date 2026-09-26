@@ -44,10 +44,10 @@ type Health struct {
 	UptimeSec int    `json:"uptimeSec"`
 }
 
-// Query pages a collection. The lite engine honours Filter, Skip and Limit and
-// refuses Sort and Projection (see Engine.Query) — a page whose order shifts
-// between reads repeats and drops documents, so the engine walks the keyspace
-// in key order instead.
+// Query pages a collection. The lite engine honours Filter, Skip, Limit and
+// top-level Projection and refuses Sort (see Engine.Query) — a page whose
+// order shifts between reads repeats and drops documents, so the engine walks
+// the keyspace in key order instead.
 type Query struct {
 	Filter     any
 	Sort       any
