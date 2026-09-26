@@ -23,6 +23,14 @@ var ErrDuplicate = errors.New("cumulite: duplicate document")
 // failure.
 var ErrUnsupported = errors.New("cumulite: unsupported request field")
 
+// ErrShapeViolation marks a write whose document misses keys the collection's
+// declared shape requires or carries keys no shape tag claims — the drift a
+// hand-maintained struct→map translation table produces when it forgets a new
+// field. Strict mode (SetShapeStrict) fails such writes with this sentinel so
+// callers can classify them; lenient mode stores the document and records the
+// finding for LastShapeAudit instead.
+var ErrShapeViolation = errors.New("cumulite: shape violation")
+
 func notFoundf(format string, args ...any) error {
 	return fmt.Errorf("cumulite: %s: %w", fmt.Sprintf(format, args...), ErrNotFound)
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
@@ -28,9 +29,16 @@ import (
 //	e\x00<coll>                    change log enabled flag, 1 byte
 //	n\x00<coll>                    next change sequence, 8-byte big-endian
 //	k\x00<key>                     key/value entry, raw
+//	s\x00<coll>                    collection shape declaration, JSON
 type Engine struct {
 	db    *badger.DB
 	start time.Time
+
+	// Most recent non-empty shape audit per collection (see engine_shape.go).
+	// In-memory only: lenient mode stores drifted documents and remembers the
+	// finding here, where a parity test or an operator can read it.
+	auditMu   sync.Mutex
+	lastAudit map[string]ShapeAudit
 }
 
 // Option configures an Engine.
@@ -209,6 +217,14 @@ func ensureMarkerKey(coll string) ([]byte, error) {
 	return []byte("m\x00" + c), nil
 }
 
+func shapeKey(coll string) ([]byte, error) {
+	c, err := cleanSegment("collection", coll)
+	if err != nil {
+		return nil, err
+	}
+	return []byte("s\x00" + c), nil
+}
+
 func (e *Engine) collectionDeclared(txn *badger.Txn, coll string) (bool, error) {
 	key, err := ensureMarkerKey(coll)
 	if err != nil {
@@ -302,8 +318,21 @@ func (e *Engine) getStored(txn *badger.Txn, coll, id string) (map[string]any, er
 }
 
 // putStored writes one document, its vectors and (when recording) its change
-// record inside the caller's transaction.
+// record inside the caller's transaction. With a shape declared for the
+// collection the document is audited against it first: strict mode fails the
+// write (ErrShapeViolation, nothing stored), lenient mode stores it and
+// remembers the finding for LastShapeAudit.
 func (e *Engine) putStored(txn *badger.Txn, coll, id string, doc map[string]any, op string) error {
+	audit, err := e.auditDoc(txn, coll, id, doc)
+	if err != nil {
+		return err
+	}
+	if audit != nil {
+		e.rememberShapeAudit(*audit)
+		if audit.Strict && audit.violated() {
+			return fmt.Errorf("%w: %s/%s: %s", ErrShapeViolation, coll, id, audit)
+		}
+	}
 	key, err := docKey(coll, id)
 	if err != nil {
 		return err

@@ -41,11 +41,47 @@ cumulus-cluster search -q "查询"                              # 同一套集�
 | 健康 | `Health` |
 
 错误以 `contract.ErrNotFound` 为 sentinel（`IsNotFound` 同义），消费方保持同一个 not-found
-惯用法；重复键可经 `ErrDuplicate` 分类，不再需要字符串匹配。
+惯用法；重复键可经 `ErrDuplicate` 分类，请求字段被拒可经 `ErrUnsupported` 分类，shape 违约
+可经 `ErrShapeViolation` 分类，不再需要字符串匹配。
 
 **刻意不做**（cumudb 有、`Port` 没有，调用即编译失败，防止顺手长出依赖）：查询语言、
 混合检索、backup/export、namespace 管理、Upsert 模式族、CAS/Incr/MPut、持久化/文本/图索引族
 （拒绝而非静默忽略）、时序 collection。
+
+## 防漂移三件套（typed 写入 / shape 审计 / 回读验证）
+
+事故背景（2026-09，cumulus 侧）：消费端手写"结构体→map 翻译表"，新字段漏更，写入路径**静默
+丢失**该字段；读回是全量反序列化，所以"看起来正常"，零报警。作为存储契约方，cumulite 把
+"翻译表漂移"从不可见变成**要么不需要、要么藏不住**。三件套都是可选能力接口（`Port` 本体
+16+1 个方法不变，远端适配器不受影响），消费方按能力做类型断言选用：
+
+```go
+if sp, ok := port.(cumulite.StructPort); ok { ... }   // 其余同理：ShapePort / DocVerifier
+```
+
+1. **`StructPort`——别再手写翻译表（预防）**。`InsertStructs`/`ReplaceStruct` 直接存整个
+   Go struct：json tag 就是字段名，存储格式与 map 路径逐字节一致（键名=tag、时间
+   =RFC3339Nano、nil 指针+omitempty=缺席）。struct 定义成为唯一事实源，新字段不可能再被
+   一张忘了更新的表丢掉。存量 map 入口原样保留。
+2. **`ShapePort`——声明 shape，写写必审（检测）**。`SetCollectionShape(coll, 零值struct)`
+   反射一次 json tag 存进键空间（持久，重启有效；重新声明保留 strict 位）；此后该集合的
+   每笔文档写（Insert/Replace/Struct 变体/Patch 的写后状态）都对照 shape 审计——
+   **Missing**（非 omitempty 的 tag 在文档中缺席，即"翻译表忘了字段"）与 **Unknown**
+   （文档键无 tag 认领，即改名/笔误）。strict 模式（`SetShapeStrict`）下非空 Missing/
+   Unknown 直接 `ErrShapeViolation` 拒写，一笔都不落；宽模式下写入照落、审计结论留在
+   `LastShapeAudit(coll)` 供测试/运维读取。`ShapeReport(coll, doc)` 是不落盘的查询态
+   尺子（并列出本次缺席的 omitempty 键），parity 测试直接对它断言。审计只做顶层键——
+   这次事故丢的就是顶层键，嵌套遍历会让尺子自己长成 schema 语言。未声明 shape 的集合
+   行为与从前完全一致。
+3. **`DocVerifier`——写后验证回读（把静默变响亮）**。`VerifyDoc(coll, id, original)` 重新
+   序列化原始值、读回实际落盘的文档、返回差分（`lost:` / `gained:` / `changed:`，身份键
+   `_id`/`_key` 不算 gained）。不需要声明 shape——它对照 original 本身而非类型，是"本可
+   一行抓住"的那一行：写完 `VerifyDoc` 一下，差分为空即回读诚实。
+
+契约立场写在 `contract/doc.go`：**文档通货是 `map[string]any`，这不是手写翻译表的许可证**——
+typed 消费方三选一：直接写 struct（①），声明 shape 让每笔写被审计（②），写后验证回读（③）。
+第二张手写表就是已经发生过的事故。
+
 
 ## 关键语义（与 cumudb 服务端对齐处）
 

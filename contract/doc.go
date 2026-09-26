@@ -14,4 +14,20 @@
 // A consumer that legitimately speaks to both engines — e.g. ask, whose default
 // path is the HTTP client — keeps both packages' types distinct, as Go demands,
 // and converts at the boundary.
+//
+// # Stance: the document currency is map[string]any, and that is not an
+// invitation to translate by hand
+//
+// Documents cross this contract as map[string]any by design — indexes, KNN
+// filters and patches all speak it. That currency is the engine's business;
+// it is not a licence for a typed consumer to hand-maintain its own
+// struct→map translation table. A hand-built table that forgets a new struct
+// field fails SILENTLY: the write stores the smaller map without complaint and
+// reads unmarshal the whole document, so the loss surfaces only when someone
+// reads the missing field back. The embedded engine therefore ships three
+// exits (cumulite.StructPort, cumulite.ShapePort, cumulite.DocVerifier):
+// write structs directly so the json tags are the single source of truth, or
+// declare a collection shape and let every write be audited against it, or
+// verify the round-trip after writing. A typed consumer must use one of the
+// three; a second hand-maintained table is the bug that already happened.
 package contract

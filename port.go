@@ -93,3 +93,64 @@ type Port interface {
 
 // The engine is the contract.
 var _ Port = (*Engine)(nil)
+
+// Port above is the wire contract; what follows are optional capability
+// interfaces the embedded Engine also satisfies. A consumer opts in per
+// capability with a type assertion, so a remote adapter that implements only
+// Port keeps compiling and a consumer can branch on the presence of a
+// capability rather than on the engine kind:
+//
+//	if sp, ok := port.(cumulite.StructPort); ok { ... }
+//
+// They exist because of one incident: a consumer hand-maintained a
+// struct→map translation table, a new field missed the table, and the loss
+// reached storage silently — reads decode the whole document, so only the
+// missing field's readers could ever notice. The capabilities close that
+// class of bug three ways: don't translate (StructPort), audit every write
+// against a declared shape (ShapePort), or prove the round-trip after the
+// fact (DocVerifier).
+
+// StructPort is the typed-write capability: store whole Go structs, json tags
+// naming the fields, so no hand-built map stands between the domain struct
+// and storage and a new field cannot be dropped by a translation table that
+// forgot it.
+type StructPort interface {
+	// InsertStructs marshals the values (tags are the field names) and
+	// stores them through the same path as Insert.
+	InsertStructs(ctx context.Context, coll string, docs []any) ([]string, error)
+	// ReplaceStruct replaces one document from a struct value.
+	ReplaceStruct(ctx context.Context, coll, id string, doc any) (map[string]any, error)
+}
+
+// ShapePort is the shape-audit capability: declare a collection's canonical
+// document shape (a zero value of the domain struct) and every write to the
+// collection is checked against its json tags — required tags absent from the
+// document, document keys no tag claims. Strict mode fails such a write;
+// lenient mode remembers the finding for later inspection.
+type ShapePort interface {
+	// SetCollectionShape declares or refreshes a collection's shape.
+	SetCollectionShape(ctx context.Context, coll string, shape any) error
+	// SetShapeStrict arms or disarms failing writes on shape violations.
+	SetShapeStrict(ctx context.Context, coll string, strict bool) error
+	// ShapeReport audits any document against the declared shape without
+	// writing it — the ruler for parity tests and ops checks.
+	ShapeReport(coll string, doc map[string]any) (ShapeAudit, error)
+	// LastShapeAudit reports the most recent non-empty finding this engine
+	// process recorded for the collection.
+	LastShapeAudit(coll string) (ShapeAudit, bool)
+}
+
+// DocVerifier is the round-trip-proof capability: read back what storage
+// actually holds for one document and diff it against the original — lost
+// keys, gained keys, changed values. It needs no declared shape, which makes
+// it the one-call reproduction of a shape audit's finding in tests and ops
+// checks.
+type DocVerifier interface {
+	VerifyDoc(ctx context.Context, coll, id string, original any) ([]string, error)
+}
+
+var (
+	_ StructPort  = (*Engine)(nil)
+	_ ShapePort   = (*Engine)(nil)
+	_ DocVerifier = (*Engine)(nil)
+)
